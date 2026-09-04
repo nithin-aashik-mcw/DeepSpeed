@@ -4,6 +4,7 @@
 # DeepSpeed Team
 
 import os
+import sys
 
 try:
     # is op_builder from deepspeed or a 3p version? this should only succeed if it's deepspeed
@@ -30,6 +31,15 @@ class CPUOpBuilder(OpBuilder):
         return cpp_ext
 
     def cxx_args(self):
+        if sys.platform == "win32":
+            # cl.exe doesn't understand GCC-style flags (-O3/-g/-fopenmp/-march=native).
+            # AVX enablement (cpu_arch()/simd_width()) for this builder on Windows is
+            # a separate follow-up; skip it here rather than emitting invalid flags.
+            # /std:c++20 is spelled out explicitly (not left to torch's BuildExtension
+            # to inject) since recent torch headers require it and that auto-injection
+            # isn't reliable across every AoT (setup.py build_ext) vs JIT
+            # (op_builder.load()) code path.
+            return ['/O2', '/openmp', '/EHsc', '/W3', '/std:c++20']
         args = ['-O3', '-g', '-Wno-reorder']
         CPU_ARCH = self.cpu_arch()
         SIMD_WIDTH = self.simd_width()

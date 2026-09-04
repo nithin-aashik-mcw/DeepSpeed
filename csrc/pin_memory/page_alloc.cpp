@@ -4,8 +4,13 @@
 
 #include "page_alloc.h"
 
+#if defined(_WIN32)
+#define NOMINMAX
+#include <windows.h>
+#else
 #include <sys/mman.h>
 #include <unistd.h>
+#endif
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
@@ -13,6 +18,33 @@
 
 void* ds_page_aligned_alloc(const int64_t size, const bool lock)
 {
+#if defined(_WIN32)
+    SYSTEM_INFO sys_info;
+    GetSystemInfo(&sys_info);
+    void* ptr = _aligned_malloc(static_cast<size_t>(size), sys_info.dwPageSize);
+    if (ptr == nullptr) { return nullptr; }
+
+    if (lock == false) { return ptr; }
+
+    // Windows caps how much memory a process may lock via a small default quota;
+    // raise it to cover this allocation before calling VirtualLock. Best-effort:
+    // very large pins may still fail even after the bump (unlike Linux mlock,
+    // there is no single ulimit knob to raise instead).
+    SIZE_T min_ws = 0, max_ws = 0;
+    GetProcessWorkingSetSize(GetCurrentProcess(), &min_ws, &max_ws);
+    SetProcessWorkingSetSize(GetCurrentProcess(),
+                             min_ws + static_cast<SIZE_T>(size),
+                             max_ws + static_cast<SIZE_T>(size));
+
+    if (!VirtualLock(ptr, static_cast<size_t>(size))) {
+        std::cerr << "VirtualLock failed to allocate " << size << " bytes with error no "
+                  << GetLastError() << std::endl;
+        _aligned_free(ptr);
+        return nullptr;
+    }
+
+    return ptr;
+#else
     void* ptr;
     int retval;
 
@@ -31,4 +63,5 @@ void* ds_page_aligned_alloc(const int64_t size, const bool lock)
     }
 
     return ptr;
+#endif
 }

@@ -17,6 +17,9 @@ def load_pin_memory_module(builder, verbose=False):
         module = super(type(builder), builder).load(verbose=verbose)
         setattr(sys, _SYS_CACHE_ATTR, module)
     so_path = getattr(module, "__file__", None)
-    if so_path:
+    # RTLD_GLOBAL has no Windows equivalent (there is no flat process-wide symbol
+    # table); the module is already resident once loaded, which is all the
+    # GetProcAddress-based lookup in deepspeed_pin_tensor_client.cpp needs.
+    if so_path and sys.platform != "win32":
         ctypes.CDLL(so_path, mode=ctypes.RTLD_GLOBAL)
     return module

@@ -11,17 +11,20 @@ Functionality for swapping optimizer tensors to/from (NVMe) storage devices.
 #include <stdlib.h>
 #include <string.h>
 
+#if !defined(_WIN32)
 #include <fcntl.h>
 #include <libaio.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <time.h>
 #include <unistd.h>
+#endif
+#include <time.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -40,9 +43,14 @@ using namespace std::chrono;
 
 static const std::string c_library_name = "deepspeed_aio";
 
+#if !defined(_WIN32)
+// Only referenced under the (default-off) DEBUG_DS_AIO_PERF blocks below; the
+// GCC/Clang unused-function attribute keeps -Wunused-function quiet in that
+// case. MSVC has no equivalent attribute, and doesn't warn on this by default.
 static void _report_aio_statistics(const char* tag,
                                    const std::vector<std::chrono::duration<double>>& latencies)
     __attribute__((unused));
+#endif
 
 static void _report_aio_statistics(const char* tag,
                                    const std::vector<std::chrono::duration<double>>& latencies)
@@ -68,6 +76,34 @@ static void _get_aio_latencies(std::vector<std::chrono::duration<double>>& raw_l
         std::accumulate(lat_usec.begin(), lat_usec.end(), 0) / lat_usec.size();
 }
 
+#if defined(_WIN32)
+// Windows has no overlapped-I/O association that survives being shared across
+// worker threads or reused across calls (see deepspeed_io_handle_t's parallel
+// pread/pwrite and its long-lived raw-fd handles), so requests are issued as
+// positioned synchronous I/O instead: ReadFile/WriteFile block until the
+// transfer finishes, which is the Win32 equivalent of POSIX pread/pwrite and
+// is safe to call concurrently from multiple threads on the same HANDLE.
+static void _win_submit_one(io_request_t* req)
+{
+    // FILE_FLAG_NO_BUFFERING requires the offset to be sector-aligned and fails
+    // with ERROR_INVALID_PARAMETER rather than degrading gracefully; block_size
+    // (and therefore every offset derived from it) is always a multiple of 4096,
+    // so this should never trip in practice -- it exists to fail loudly with a
+    // clear diagnostic if that assumption is ever violated.
+    assert(req->_offset % 4096 == 0);
+    OVERLAPPED ov = {};
+    ov.Offset = static_cast<DWORD>(req->_offset & 0xffffffff);
+    ov.OffsetHigh = static_cast<DWORD>(req->_offset >> 32);
+    DWORD bytes_transferred = 0;
+    const BOOL ok =
+        req->_read_op
+            ? ReadFile(req->_fd, req->_buf, static_cast<DWORD>(req->_nbytes), &bytes_transferred, &ov)
+            : WriteFile(
+                  req->_fd, req->_buf, static_cast<DWORD>(req->_nbytes), &bytes_transferred, &ov);
+    assert(ok && bytes_transferred == static_cast<DWORD>(req->_nbytes));
+}
+#endif
+
 static void _do_io_submit_singles(const int64_t n_iocbs,
                                   const int64_t iocb_index,
                                   std::unique_ptr<aio_context>& aio_ctxt,
@@ -75,9 +111,14 @@ static void _do_io_submit_singles(const int64_t n_iocbs,
 {
     for (auto i = 0; i < n_iocbs; ++i) {
         const auto st = std::chrono::high_resolution_clock::now();
+#if defined(_WIN32)
+        _win_submit_one(aio_ctxt->_iocbs[i]);
+#else
         const auto submit_ret = io_submit(aio_ctxt->_io_ctxt, 1, aio_ctxt->_iocbs.data() + i);
+        assert(submit_ret > 0);
+#endif
         submit_times.push_back(std::chrono::high_resolution_clock::now() - st);
-#if DEBUG_DS_AIO_SUBMIT_PERF
+#if DEBUG_DS_AIO_SUBMIT_PERF && !defined(_WIN32)
         printf("submit(usec) %f io_index=%lld buf=%p len=%lu off=%llu \n",
                submit_times.back().count() * 1e6,
                iocb_index,
@@ -85,7 +126,6 @@ static void _do_io_submit_singles(const int64_t n_iocbs,
                aio_ctxt->_iocbs[i]->u.c.nbytes,
                aio_ctxt->_iocbs[i]->u.c.offset);
 #endif
-        assert(submit_ret > 0);
     }
 }
 
@@ -95,9 +135,17 @@ static void _do_io_submit_block(const int64_t n_iocbs,
                                 std::vector<std::chrono::duration<double>>& submit_times)
 {
     const auto st = std::chrono::high_resolution_clock::now();
+#if defined(_WIN32)
+    // Windows has no batch-submit syscall equivalent to io_submit(n>1); issuing
+    // each request individually is fine since io_submit's batching was purely a
+    // syscall-count optimization on Linux, not something correctness relies on.
+    for (auto i = 0; i < n_iocbs; ++i) { _win_submit_one(aio_ctxt->_iocbs[i]); }
+#else
     const auto submit_ret = io_submit(aio_ctxt->_io_ctxt, n_iocbs, aio_ctxt->_iocbs.data());
+    assert(submit_ret > 0);
+#endif
     submit_times.push_back(std::chrono::high_resolution_clock::now() - st);
-#if DEBUG_DS_AIO_SUBMIT_PERF
+#if DEBUG_DS_AIO_SUBMIT_PERF && !defined(_WIN32)
     printf("submit(usec) %f io_index=%lld nr=%lld buf=%p len=%lu off=%llu \n",
            submit_times.back().count() * 1e6,
            iocb_index,
@@ -106,7 +154,6 @@ static void _do_io_submit_block(const int64_t n_iocbs,
            aio_ctxt->_iocbs[0]->u.c.nbytes,
            aio_ctxt->_iocbs[0]->u.c.offset);
 #endif
-    assert(submit_ret > 0);
 }
 
 static int _do_io_complete(const int64_t min_completes,
@@ -115,12 +162,18 @@ static int _do_io_complete(const int64_t min_completes,
                            std::vector<std::chrono::duration<double>>& reap_times)
 {
     const auto start_time = std::chrono::high_resolution_clock::now();
+#if defined(_WIN32)
+    // Requests already ran to completion synchronously during submit, so every
+    // pending request is done by the time we get here.
+    const int64_t n_completes = max_completes;
+#else
     int64_t n_completes = io_pgetevents(aio_ctxt->_io_ctxt,
                                         min_completes,
                                         max_completes,
                                         aio_ctxt->_io_events.data(),
                                         nullptr,
                                         nullptr);
+#endif
     reap_times.push_back(std::chrono::high_resolution_clock::now() - start_time);
     assert(n_completes >= min_completes);
     return n_completes;
@@ -264,8 +317,26 @@ void report_file_error(const char* filename, const std::string file_op, const in
     std::cerr << c_library_name << ":  " << err_msg << std::endl;
 }
 
-int open_file(const char* filename, const bool read_op)
+aio_fd_t open_file(const char* filename, const bool read_op)
 {
+#if defined(_WIN32)
+    const DWORD access = read_op ? GENERIC_READ : GENERIC_WRITE;
+    const DWORD disposition = read_op ? OPEN_EXISTING : CREATE_ALWAYS;
+    const auto fd = CreateFileA(filename,
+                                access,
+                                FILE_SHARE_READ,
+                                nullptr,
+                                disposition,
+                                FILE_FLAG_NO_BUFFERING,
+                                nullptr);
+    if (fd == INVALID_HANDLE_VALUE) {
+        const auto error_code = GetLastError();
+        const auto error_msg = read_op ? " open for read " : " open for write ";
+        report_file_error(filename, error_msg, static_cast<int>(error_code));
+        return AIO_INVALID_FD;
+    }
+    return fd;
+#else
     const int flags = read_op ? (O_RDONLY | O_DIRECT) : (O_WRONLY | O_CREAT | O_DIRECT);
 #if defined(__ENABLE_CANN__)
     int* flags_ptr = (int*)&flags;
@@ -280,32 +351,36 @@ int open_file(const char* filename, const bool read_op)
         return -1;
     }
     return fd;
+#endif
+}
+
+void close_file(const aio_fd_t fd)
+{
+#if defined(_WIN32)
+    CloseHandle(fd);
+#else
+    close(fd);
+#endif
 }
 
 int regular_read(const char* filename, std::vector<char>& buffer)
 {
-    const auto fd = open(filename, O_RDONLY, 0600);
-    assert(fd != -1);
-    struct stat fs;
-    const auto result = fstat(fd, &fs);
-    assert(result != -1);
-    int64_t num_bytes = fs.st_size;
+    auto* file = fopen(filename, "rb");
+    assert(file != nullptr);
+    assert(fseek(file, 0, SEEK_END) == 0);
+    const int64_t num_bytes = ftell(file);
+    assert(num_bytes >= 0);
+    assert(fseek(file, 0, SEEK_SET) == 0);
     buffer.resize(num_bytes);
-    int64_t read_bytes = 0;
-    auto r = 0;
-    do {
-        const auto buffer_ptr = buffer.data() + read_bytes;
-        const auto bytes_to_read = num_bytes - read_bytes;
-        r = read(fd, buffer_ptr, bytes_to_read);
-        read_bytes += r;
-    } while (r > 0);
+    const int64_t read_bytes =
+        num_bytes == 0 ? 0 : static_cast<int64_t>(fread(buffer.data(), 1, num_bytes, file));
 
     if (read_bytes != num_bytes) {
-        std::cerr << "read error " << " read_bytes (read) = " << read_bytes
-                  << " num_bytes (fstat) = " << num_bytes << std::endl;
+        std::cerr << "read error " << " read_bytes (fread) = " << read_bytes
+                  << " num_bytes (ftell) = " << num_bytes << std::endl;
     }
     assert(read_bytes == num_bytes);
-    close(fd);
+    fclose(file);
     return 0;
 }
 

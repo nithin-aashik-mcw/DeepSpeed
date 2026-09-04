@@ -15,3 +15,9 @@ set DS_BUILD_DEEP_COMPILE=0
 python -m build --wheel --no-isolation
 
 :end
+
+@REM set DISTUTILS_USE_SDK=1
+@REM set DS_BUILD_AIO=1
+@REM set DS_BUILD_PIN_MEMORY=1
+@REM set DS_ENABLE_NINJA=1
+@REM python -m build --wheel --no-isolation

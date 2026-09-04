@@ -30,6 +30,12 @@ class CCLCommBuilder(CPUOpBuilder):
         return ['-O2', '-fopenmp']
 
     def is_compatible(self, verbose=False):
+        # shm.cpp (shared with ShareMemCommBuilder) unconditionally includes the
+        # POSIX-only <semaphore.h>; there is no Windows implementation of it.
+        if sys.platform == "win32":
+            if verbose:
+                self.warning(f"{self.NAME} uses POSIX-only shared-memory APIs, not available on Windows.")
+            return False
         # TODO: add soft compatibility check for private binary release.
         #  a soft check, as in we know it can be trivially changed.
         return super().is_compatible(verbose)
