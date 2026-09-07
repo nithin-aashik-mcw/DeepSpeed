@@ -248,7 +248,7 @@ def _merge_zero_shards(param_base_path, state, tp_degree, slice_shapes=None):
             empty_tp_indices.append((tp_index, len(slices)))
             continue
 
-        pattern = re.compile(f"{prefix_path}\\.([0-9]+)")
+        pattern = re.compile(f"{re.escape(prefix_path)}\\.([0-9]+)")
         dp_indices = set()
         for p in paths:
             m = pattern.match(p)

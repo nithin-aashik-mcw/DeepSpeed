@@ -4,6 +4,7 @@
 # DeepSpeed Team
 
 import os
+import platform
 import re
 import time
 import inspect
@@ -65,6 +66,11 @@ def get_master_port(base_port=29500, port_range_size=1000):
 
 
 def _get_cpu_socket_count():
+    # /proc/cpuinfo (and the cat/grep/sort/wc pipeline below) is Linux-only, so
+    # Windows queries the physical socket count via WMI instead.
+    if platform.system() == "Windows":
+        return int(subprocess.check_output(
+            ["powershell", "-Command", "(Get-CimInstance Win32_ComputerSystem).NumberOfProcessors"]).decode().strip())
     import shlex
     p1 = subprocess.Popen(shlex.split("cat /proc/cpuinfo"), stdout=subprocess.PIPE)
     p2 = subprocess.Popen(["grep", "physical id"], stdin=p1.stdout, stdout=subprocess.PIPE)
@@ -287,8 +293,9 @@ class DistributedExec(ABC):
         if os.environ.get('DS_DISABLE_REUSE_DIST_ENV', '0') == '1':
             self.reuse_dist_env = False
 
-        # Set start method to `forkserver` (or `fork`)
-        mp.set_start_method('forkserver', force=True)
+        # Set start method to `forkserver` (or `fork`). Windows only supports `spawn`.
+        start_method = 'forkserver' if 'forkserver' in mp.get_all_start_methods() else 'spawn'
+        mp.set_start_method(start_method, force=True)
 
         if self.non_daemonic_procs:
             self._launch_non_daemonic_procs(num_procs, init_method)

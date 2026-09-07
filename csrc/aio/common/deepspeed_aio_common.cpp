@@ -321,7 +321,12 @@ aio_fd_t open_file(const char* filename, const bool read_op)
 {
 #if defined(_WIN32)
     const DWORD access = read_op ? GENERIC_READ : GENERIC_WRITE;
-    const DWORD disposition = read_op ? OPEN_EXISTING : CREATE_ALWAYS;
+    // OPEN_ALWAYS (not CREATE_ALWAYS) to match POSIX's O_CREAT without O_TRUNC: a
+    // write call reopens the file on every invocation (see pwrite() in
+    // deepspeed_py_io_handle.cpp), and offset writes build a file up across
+    // several such calls, so truncating on each open would wipe out data an
+    // earlier call already wrote.
+    const DWORD disposition = read_op ? OPEN_EXISTING : OPEN_ALWAYS;
     const auto fd = CreateFileA(filename,
                                 access,
                                 FILE_SHARE_READ,
