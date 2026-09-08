@@ -77,6 +77,11 @@ def test_user_args(cmd, multi_node):
 def test_bash_string_args(tmpdir, user_script_fp):
     if shutil.which("bash") is None:
         pytest.skip("bash is not available on this system")
+    if sys.platform == "win32":
+        # The deepspeed console entry point is a .bat file on Windows, and
+        # Git-Bash's exec/xargs do a literal filename lookup with no
+        # PATHEXT-style resolution, so a bare "deepspeed" is unreachable here.
+        pytest.skip("bare 'deepspeed' is not invocable from bash on Windows (entry point is a .bat file)")
 
     bash_script = f"""
     ARGS="--prompt 'DeepSpeed is the best'"
