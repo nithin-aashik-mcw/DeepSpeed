@@ -8,4 +8,4 @@ pytest-randomly
 pytest-xdist
 transformers>=4.51.3
 
-# pip install -e .[win-dev,autotuning] --pre --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cpu
+# pip install .[win-dev,autotuning] --pre --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cpu

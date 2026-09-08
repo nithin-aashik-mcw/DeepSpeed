@@ -563,7 +563,14 @@ class OpBuilder(ABC):
             if torch.cuda.is_available() and isinstance(self, CUDAOpBuilder):
                 self.validate_torch_op_version(torch_info)
 
-            op_module = importlib.import_module(self.absolute_name())
+            try:
+                op_module = importlib.import_module(self.absolute_name())
+            except ImportError:
+                # installed_ops reflects what an earlier `pip install .` compiled into
+                # site-packages, but test runners (see tests/conftest.py) prioritize the
+                # source tree on sys.path, which never receives that compiled extension.
+                # JIT-build instead of failing so any install/build combination works.
+                return self.jit_load(verbose)
             __class__._loaded_ops[self.name] = op_module
             return op_module
         else:
