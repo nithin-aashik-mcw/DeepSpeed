@@ -1,0 +1,56 @@
+name: windows-torch-latest
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    name: windows-torch-latest / unit tests (${{ matrix.arch }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+        python-version: ['3.11', '3.12', '3.13']
+        include:
+          - arch: arm64
+            runs-on: windows-11-arm
+            msvc-arch: arm64
+          - arch: x64
+            runs-on: windows-latest
+            msvc-arch: amd64
+
+    env:
+      DISTUTILS_USE_SDK: '1'
+      DS_BUILD_OPS: '1'
+      DS_BUILD_AIO: '1'
+      DS_BUILD_PIN_MEMORY: '1'
+      DS_ENABLE_NINJA: '1'
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc-arch }}
+
+      - name: Install build tools
+        run: pip install build wheel setuptools
+
+      - name: Install PyTorch
+        run: pip install torch==2.14.0 --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install deepspeed
+        run: pip install .[win-dev,autotuning] --pre --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cpu
+
+      - name: Unit tests
+        run: pytest --maxfail=100 --color=yes --durations=0 --verbose -rF -n 4 unit\
+        working-directory: tests
