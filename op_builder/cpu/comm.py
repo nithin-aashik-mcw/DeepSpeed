@@ -30,11 +30,11 @@ class CCLCommBuilder(CPUOpBuilder):
         return ['-O2', '-fopenmp']
 
     def is_compatible(self, verbose=False):
-        # shm.cpp (shared with ShareMemCommBuilder) unconditionally includes the
-        # POSIX-only <semaphore.h>; there is no Windows implementation of it.
+        # This builder also needs oneCCL (see extra_ldflags below), which isn't
+        # verified to build/link on Windows here, so keep it Linux-only for now.
         if sys.platform == "win32":
             if verbose:
-                self.warning(f"{self.NAME} uses POSIX-only shared-memory APIs, not available on Windows.")
+                self.warning(f"{self.NAME} requires oneCCL, which is not verified on Windows.")
             return False
         # TODO: add soft compatibility check for private binary release.
         #  a soft check, as in we know it can be trivially changed.
@@ -69,10 +69,13 @@ class ShareMemCommBuilder(CPUOpBuilder):
         return includes
 
     def cxx_args(self):
+        if sys.platform == "win32":
+            return super().cxx_args()
         return ['-O2', '-fopenmp']
 
     def is_compatible(self, verbose=False):
-        # The shared-memory kernels use Linux-only APIs, so let other platforms fall back to gloo.
-        if sys.platform != 'linux':
+        # The shared-memory kernels have Linux and Windows implementations; other
+        # platforms (e.g. macOS) fall back to gloo.
+        if sys.platform not in ('linux', 'win32'):
             return False
         return super().is_compatible(verbose)
