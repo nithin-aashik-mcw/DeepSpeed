@@ -38,9 +38,21 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: ${{ matrix.msvc-arch }}
+      - name: Setup MSVC environment
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -property installationPath
+          $vcvarsall = Join-Path $vsPath 'VC\Auxiliary\Build\vcvarsall.bat'
+          $envDump = cmd /c "`"$vcvarsall`" ${{ matrix.msvc-arch }} >nul && set"
+          foreach ($line in $envDump) {
+            if ($line -match '^([^=]+)=(.*)$') {
+              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
+
+      - name: Verify MSVC toolchain
+        run: where cl
 
       - name: Install build tools
         run: pip install build wheel setuptools

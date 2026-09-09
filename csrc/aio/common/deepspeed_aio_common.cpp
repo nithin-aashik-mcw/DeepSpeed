@@ -83,14 +83,11 @@ static void _get_aio_latencies(std::vector<std::chrono::duration<double>>& raw_l
 // positioned synchronous I/O instead: ReadFile/WriteFile block until the
 // transfer finishes, which is the Win32 equivalent of POSIX pread/pwrite and
 // is safe to call concurrently from multiple threads on the same HANDLE.
+// open_file() does not pass FILE_FLAG_NO_BUFFERING, so there is no sector-alignment
+// requirement on the offset/length here (block_size is not necessarily a multiple
+// of the volume's sector size, e.g. the 1KB block size used in unit tests).
 static void _win_submit_one(io_request_t* req)
 {
-    // FILE_FLAG_NO_BUFFERING requires the offset to be sector-aligned and fails
-    // with ERROR_INVALID_PARAMETER rather than degrading gracefully; block_size
-    // (and therefore every offset derived from it) is always a multiple of 4096,
-    // so this should never trip in practice -- it exists to fail loudly with a
-    // clear diagnostic if that assumption is ever violated.
-    assert(req->_offset % 4096 == 0);
     OVERLAPPED ov = {};
     ov.Offset = static_cast<DWORD>(req->_offset & 0xffffffff);
     ov.OffsetHigh = static_cast<DWORD>(req->_offset >> 32);
@@ -327,12 +324,17 @@ aio_fd_t open_file(const char* filename, const bool read_op)
     // several such calls, so truncating on each open would wipe out data an
     // earlier call already wrote.
     const DWORD disposition = read_op ? OPEN_EXISTING : OPEN_ALWAYS;
+    // No FILE_FLAG_NO_BUFFERING: submission is already synchronous on Windows
+    // (see _win_submit_one), so bypassing the cache would only cost the
+    // sector-alignment requirement it imposes on offset/length/buffer, for no
+    // async benefit -- and DeepSpeed's block_size is not guaranteed to be
+    // sector-aligned (e.g. the 1KB block size used in unit tests).
     const auto fd = CreateFileA(filename,
                                 access,
                                 FILE_SHARE_READ,
                                 nullptr,
                                 disposition,
-                                FILE_FLAG_NO_BUFFERING,
+                                FILE_ATTRIBUTE_NORMAL,
                                 nullptr);
     if (fd == INVALID_HANDLE_VALUE) {
         const auto error_code = GetLastError();
