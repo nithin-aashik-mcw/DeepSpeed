@@ -718,8 +718,8 @@ class DeepSpeedConfig(object):
                 self.world_size = dist.get_world_size(mesh_device.get_group(mesh_dim="data_parallel"))
             else:
                 # HF zero.init case where there is no mpu
-                if "sequence_parallel_size" in config:
-                    self.world_size = dist.get_world_size() / config["sequence_parallel_size"]
+                if "sequence_parallel_size" in self._param_dict:
+                    self.world_size = dist.get_world_size() / self._param_dict["sequence_parallel_size"]
                 else:
                     self.world_size = dist.get_world_size()
         except (RuntimeError, AssertionError, AttributeError):

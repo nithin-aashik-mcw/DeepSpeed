@@ -86,18 +86,36 @@ static void _get_aio_latencies(std::vector<std::chrono::duration<double>>& raw_l
 // open_file() does not pass FILE_FLAG_NO_BUFFERING, so there is no sector-alignment
 // requirement on the offset/length here (block_size is not necessarily a multiple
 // of the volume's sector size, e.g. the 1KB block size used in unit tests).
+// ReadFile/WriteFile are permitted to transfer fewer bytes than requested in a
+// single call (e.g. under memory/cache pressure for buffered I/O), so the full
+// request is not necessarily done when the call returns -- callers must loop
+// on the remainder rather than treat a short transfer as an error.
 static void _win_submit_one(io_request_t* req)
 {
-    OVERLAPPED ov = {};
-    ov.Offset = static_cast<DWORD>(req->_offset & 0xffffffff);
-    ov.OffsetHigh = static_cast<DWORD>(req->_offset >> 32);
-    DWORD bytes_transferred = 0;
-    const BOOL ok =
-        req->_read_op
-            ? ReadFile(req->_fd, req->_buf, static_cast<DWORD>(req->_nbytes), &bytes_transferred, &ov)
-            : WriteFile(
-                  req->_fd, req->_buf, static_cast<DWORD>(req->_nbytes), &bytes_transferred, &ov);
-    assert(ok && bytes_transferred == static_cast<DWORD>(req->_nbytes));
+    char* buf = static_cast<char*>(req->_buf);
+    int64_t offset = req->_offset;
+    int64_t remaining = req->_nbytes;
+
+    while (remaining > 0) {
+        OVERLAPPED ov = {};
+        ov.Offset = static_cast<DWORD>(offset & 0xffffffff);
+        ov.OffsetHigh = static_cast<DWORD>(offset >> 32);
+        DWORD bytes_transferred = 0;
+        const BOOL ok =
+            req->_read_op
+                ? ReadFile(req->_fd, buf, static_cast<DWORD>(remaining), &bytes_transferred, &ov)
+                : WriteFile(req->_fd, buf, static_cast<DWORD>(remaining), &bytes_transferred, &ov);
+        if (!ok || bytes_transferred == 0) {
+            const auto error_code = GetLastError();
+            report_file_error("<aio>", req->_read_op ? "ReadFile" : "WriteFile",
+                              static_cast<int>(error_code));
+            assert(ok && bytes_transferred > 0);
+            return;
+        }
+        buf += bytes_transferred;
+        offset += bytes_transferred;
+        remaining -= bytes_transferred;
+    }
 }
 #endif
 
