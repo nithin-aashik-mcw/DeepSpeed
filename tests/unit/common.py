@@ -210,13 +210,21 @@ class DistributedExec(ABC):
         try:
             skip_msgs = skip_msgs_async.get(self.exec_timeout)
         except mp.TimeoutError:
-            # Shortcut to exit pytest in the case of a hanged test. This
-            # usually means an environment error and the rest of tests will
-            # hang (causing super long unit test runtimes)
-            pytest.exit("Test hanged, exiting", returncode=1)
-        finally:
-            # Regardless of the outcome, ensure proper teardown
-            # Tear down distributed environment and close process pools
+            # A hung worker can't respond to the graceful _dist_destroy RPC
+            # that _close_pool relies on, so terminate the pool directly here
+            # instead of exiting the whole session: under xdist, pytest.exit()
+            # kills this worker's channel to the controller in a way that
+            # surfaces as an INTERNALERROR for the entire run, even though
+            # only this one test actually hung.
+            pool.terminate()
+            pool.join()
+            if self.reuse_dist_env:
+                self._pool_cache.pop(num_procs, None)
+            pytest.fail("Test hanged and was terminated after exceeding the execution timeout")
+        except BaseException:
+            self._close_pool(pool, num_procs)
+            raise
+        else:
             self._close_pool(pool, num_procs)
 
         # If we skipped a test, propagate that to this process
