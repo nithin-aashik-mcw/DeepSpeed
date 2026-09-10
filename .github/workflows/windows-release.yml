@@ -52,7 +52,7 @@ jobs:
         shell: pwsh
         run: |
           $env:DS_BUILD_STRING = " "
-          python -m build --wheel
+          python -m build --wheel --no-isolation
 
       - name: Attach wheel to GitHub Release
         uses: softprops/action-gh-release@v2
