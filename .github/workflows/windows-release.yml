@@ -31,8 +31,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: "master"
 
       - name: Setup virtual environment
         uses: ./.github/workflows/setup-win-venv
