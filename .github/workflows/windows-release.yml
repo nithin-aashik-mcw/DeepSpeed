@@ -69,3 +69,33 @@ jobs:
       #     password: ${{ secrets.PYPI_API_TOKEN }}
       #     repository-url: https://upload.pypi.org/legacy/
       #     packages-dir: dist/
+
+  bump-version:
+    name: windows-release / bump version
+    needs: build-wheels
+    runs-on: ubuntu-24.04
+    environment: release-env
+
+    steps:
+      - uses: actions/checkout@v7
+      - name: Get release version from tag
+        run: |
+          echo "RELEASE_VERSION=${GITHUB_REF#refs/*/v}" >> $GITHUB_ENV
+      - name: Bump version
+        run: |
+          pip install packaging
+          python release/bump_patch_version.py --current_version ${{ env.RELEASE_VERSION }}
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.GH_PAT }}
+          add-paths: |
+            version.txt
+          body: |
+            **Auto-generated PR to update version.txt after a Windows DeepSpeed release**
+            Released version - ${{ env.RELEASE_VERSION }}
+            Author           - @${{ github.actor }}
+          branch: AutoPR/${{ env.RELEASE_VERSION }}
+          assignees: ${{ github.actor }}
+          title: "Update version.txt after ${{ env.RELEASE_VERSION }} release"
+          author: ${{ github.actor }} <${{ github.actor }}@users.noreply.github.com>
