@@ -132,10 +132,18 @@ def test_zero3_semantic_guard_ignores_transient_physical_state_changes(monkeypat
         # specialized parameter ends up lifted as an argument at all). Select the forward input by
         # shape instead of assuming a fixed arity, so this stand-in stays a faithful "pass the
         # activation through unchanged" backend no matter how many arguments Dynamo actually passes.
+        #
+        # Dynamo may also compile ZeROOrderedDict.__getitem__ as its own guarded frame: its
+        # "torch.compiler.is_compiling()" early return is a genuine identity on the parameter, so
+        # that frame's compiled callable is invoked with only the parameter tensor, never `value`.
+        # Treat a call carrying exactly one tensor as that identity passthrough.
         def compiled_forward(*args):
-            for arg in args:
-                if torch.is_tensor(arg) and arg.shape == value.shape:
+            tensor_args = [arg for arg in args if torch.is_tensor(arg)]
+            for arg in tensor_args:
+                if arg.shape == value.shape:
                     return (arg, )
+            if len(tensor_args) == 1:
+                return (tensor_args[0], )
             raise AssertionError(f"compiled callable invoked without the forward input: {args}")
 
         return compiled_forward
