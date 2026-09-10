@@ -24,45 +24,20 @@ jobs:
             runs-on: windows-latest
             msvc-arch: amd64
 
-    env:
-      DISTUTILS_USE_SDK: '1'
-      DS_BUILD_OPS: '1'
-      DS_BUILD_AIO: '1'
-      DS_BUILD_PIN_MEMORY: '1'
-      DS_ENABLE_NINJA: '1'
-
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - name: Setup virtual environment
+        uses: ./.github/workflows/setup-win-venv
         with:
           python-version: ${{ matrix.python-version }}
-
-      - name: Setup MSVC environment
-        shell: pwsh
-        run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsPath = & $vswhere -latest -products * -property installationPath
-          $vcvarsall = Join-Path $vsPath 'VC\Auxiliary\Build\vcvarsall.bat'
-          $envDump = cmd /c "`"$vcvarsall`" ${{ matrix.msvc-arch }} >nul && set"
-          foreach ($line in $envDump) {
-            if ($line -match '^([^=]+)=(.*)$') {
-              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-            }
-          }
-
-      - name: Verify MSVC toolchain
-        run: where cl
-
-      - name: Install build tools
-        run: pip install build wheel setuptools
-
-      - name: Install PyTorch
-        run: pip install torch==2.14.0 --index-url https://download.pytorch.org/whl/cpu
+          msvc-arch: ${{ matrix.msvc-arch }}
 
       - name: Install deepspeed
         run: pip install .[win-dev,autotuning] --pre --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cpu
 
       - name: Unit tests
-        run: pytest --maxfail=100 --color=yes --durations=0 --verbose -rF -n 4 unit\
+        run: |
+          pytest --maxfail=100 --color=yes --durations=0 --verbose -rF -n 4 unit\
+          pytest --maxfail=100 --color=yes --durations=0 --verbose -rF -m sequential unit\
         working-directory: tests

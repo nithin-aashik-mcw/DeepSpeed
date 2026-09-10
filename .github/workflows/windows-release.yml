@@ -1,0 +1,73 @@
+name: Build and publish Windows DeepSpeed wheels
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-wheels:
+    name: windows-release / build wheel (${{ matrix.arch }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+        python-version: ['3.11', '3.12', '3.13']
+        include:
+          - arch: arm64
+            runs-on: windows-11-arm
+            msvc-arch: arm64
+          - arch: x64
+            runs-on: windows-latest
+            msvc-arch: amd64
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: "master"
+
+      - name: Setup virtual environment
+        uses: ./.github/workflows/setup-win-venv
+        with:
+          python-version: ${{ matrix.python-version }}
+          msvc-arch: ${{ matrix.msvc-arch }}
+
+      - name: Get release version from tag
+        shell: bash
+        run: |
+          echo "RELEASE_VERSION=${GITHUB_REF#refs/*/v}" >> $GITHUB_ENV
+
+      - name: Check release version
+        run: |
+          pip install packaging
+          python release/check_release_version.py --release_version ${{ env.RELEASE_VERSION }}
+
+      - name: Build wheel
+        shell: pwsh
+        run: |
+          $env:DS_BUILD_STRING = " "
+          python -m build --wheel
+
+      - name: Attach wheel to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: dist/*.whl
+
+      # Publishing precompiled Windows wheels to PyPI is disabled for now until the
+      # build has proven stable across the matrix above. To enable, uncomment below
+      # and add `environment: release-env` to this job so PYPI_API_TOKEN is available.
+      # - name: Publish to PyPI
+      #   uses: pypa/gh-action-pypi-publish@release/v1
+      #   with:
+      #     password: ${{ secrets.PYPI_API_TOKEN }}
+      #     repository-url: https://upload.pypi.org/legacy/
+      #     packages-dir: dist/

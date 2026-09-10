@@ -126,7 +126,19 @@ def test_zero3_semantic_guard_ignores_transient_physical_state_changes(monkeypat
     def backend(_gm, _inputs):
         backend_calls.append(None)
         param.data = torch.ones(2, 2, device=param.device)
-        return lambda _weight, value: (value, )
+
+        # The contract under test is "no second recompile happens", not the exact positional
+        # calling convention Dynamo/AOTAutograd picks for the compiled callable (e.g. whether a
+        # specialized parameter ends up lifted as an argument at all). Select the forward input by
+        # shape instead of assuming a fixed arity, so this stand-in stays a faithful "pass the
+        # activation through unchanged" backend no matter how many arguments Dynamo actually passes.
+        def compiled_forward(*args):
+            for arg in args:
+                if torch.is_tensor(arg) and arg.shape == value.shape:
+                    return (arg, )
+            raise AssertionError(f"compiled callable invoked without the forward input: {args}")
+
+        return compiled_forward
 
     patch_fake_tensor()
     compiled = torch.compile(module, backend=backend)
