@@ -39,6 +39,9 @@ jobs:
     concurrency:
       group: windows-release-${{ github.ref }}-${{ matrix.arch }}-${{ matrix.python-version }}
       cancel-in-progress: true
+    env:
+      CMAKE_VERSION: 4.4.3
+      NINJA_VERSION: 1.13.2
     strategy:
       fail-fast: false
       matrix:
@@ -48,9 +51,13 @@ jobs:
           - arch: arm64
             runs-on: windows-11-arm
             msvc-arch: arm64
+            cmake-arch: arm64
+            ninja-suffix: arm64
           - arch: x64
             runs-on: windows-latest
             msvc-arch: amd64
+            cmake-arch: x86_64
+            ninja-suffix: ''
 
     steps:
       - uses: actions/checkout@v7
@@ -71,6 +78,17 @@ jobs:
         run: |
           pip install packaging
           python release/check_release_version.py --release_version ${{ env.RELEASE_VERSION }}
+
+      - name: Install CMake and Ninja for Win-${{ matrix.arch }}
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/Kitware/CMake/releases/download/v${{ env.CMAKE_VERSION }}/cmake-${{ env.CMAKE_VERSION }}-windows-${{ matrix.cmake-arch }}.msi -OutFile cmake-${{ matrix.arch }}.msi
+          Start-Process msiexec.exe -ArgumentList "/i cmake-${{ matrix.arch }}.msi /quiet /norestart" -Wait
+          "$env:ProgramFiles\CMake\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+          Invoke-WebRequest https://github.com/ninja-build/ninja/releases/download/v${{ env.NINJA_VERSION }}/ninja-win${{ matrix.ninja-suffix }}.zip -OutFile ninja-${{ matrix.arch }}.zip
+          Expand-Archive ninja-${{ matrix.arch }}.zip -DestinationPath ninja-${{ matrix.arch }}
+          Copy-Item ninja-${{ matrix.arch }}\ninja.exe -Destination "C:\Windows\System32"
 
       - name: Build wheel
         shell: pwsh
