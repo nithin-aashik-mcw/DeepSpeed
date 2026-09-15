@@ -57,8 +57,11 @@ void Adam_Optimizer::Step_1(ds_params_precision_t* _params,
             size_t copy_size = TILE;
             if ((t + TILE) > _param_size) copy_size = _param_size - t;
             size_t offset = copy_size + t;
+            // MSVC's OpenMP loop index must be signed; GCC/Clang accept either.
+            const auto t_signed = static_cast<int64_t>(t);
+            const auto offset_signed = static_cast<int64_t>(offset);
 #pragma omp parallel for if (parallel)
-            for (size_t k = t; k < offset; k++) {
+            for (int64_t k = t_signed; k < offset_signed; k++) {
                 float grad = (float)grads[k];
                 float param = (float)_params[k];
                 float momentum = _exp_avg[k];
@@ -287,8 +290,10 @@ void adamw_rollback_inplace(float* params,
     const float lr_lambda = lr * lambda;
     const float one_minus_lr_lambda = 1.0f - lr_lambda;
 
+    // MSVC's OpenMP loop index must be signed; GCC/Clang accept either.
+    const auto param_size_signed = static_cast<int64_t>(param_size);
 #pragma omp parallel for
-    for (size_t i = 0; i < param_size; ++i) {
+    for (int64_t i = 0; i < param_size_signed; ++i) {
         const float bias_correction1 = 1.0f - beta1_pow;
         const float bias_correction2 = 1.0f - beta2_pow;
 
@@ -521,9 +526,7 @@ struct ZenControl {
 class ZenFlowAdam {
 public:
     ZenFlowAdam(int optimizer_id, std::vector<int> zf_affinity) : opt_id_(optimizer_id)
-    {
-        pool_ = std::make_unique<PinnedThreadPool>(zf_affinity);
-    }
+    { pool_ = std::make_unique<PinnedThreadPool>(zf_affinity); }
 
     ~ZenFlowAdam() = default;
 
@@ -668,9 +671,7 @@ void zenflow_adam_ctrl_init(uintptr_t control_ptr, int num_groups)
 
 // Called in the optimizer process; blocks running steps until the exit command.
 void zenflow_adam_run_worker(int handle, uintptr_t control_ptr)
-{
-    s_zenflow_adams.at(handle)->run_worker(reinterpret_cast<void*>(control_ptr));
-}
+{ s_zenflow_adams.at(handle)->run_worker(reinterpret_cast<void*>(control_ptr)); }
 
 void zenflow_adam_submit(uintptr_t control_ptr,
                          int now_state,

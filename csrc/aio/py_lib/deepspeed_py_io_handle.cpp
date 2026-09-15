@@ -9,9 +9,17 @@ Functionality for swapping optimizer tensors to/from (NVMe) storage devices.
 
 #include "deepspeed_py_io_handle.h"
 #include <cstdlib>
+#if defined(_WIN32)
+#include <io.h>
+#endif
 #include "deepspeed_aio_op_desc.h"
 
+// Windows disk sector sizes are commonly 4096 bytes vs. the 512-byte default assumed on Linux.
+#if defined(_WIN32)
+#define O_DIRECT_ALIGNMENT 4096
+#else
 #define O_DIRECT_ALIGNMENT 512
+#endif
 
 using namespace std;
 
@@ -23,7 +31,11 @@ static bool is_valid_bytes_to_read(const char* filename,
 {
     int64_t num_file_bytes;
     if (-1 == get_file_size(filename, num_file_bytes)) {
+#if defined(_WIN32)
+        const auto error_code = static_cast<int>(GetLastError());
+#else
         const auto error_code = errno;
+#endif
         report_file_error(filename, " fstat for read", error_code);
         return false;
     }
@@ -64,14 +76,10 @@ deepspeed_io_handle_t::~deepspeed_io_handle_t()
 }
 
 const int deepspeed_io_handle_t::get_block_size() const
-{
-    return _aio_ctxt ? _aio_ctxt->_block_size : -1;
-}
+{ return _aio_ctxt ? _aio_ctxt->_block_size : -1; }
 
 const int deepspeed_io_handle_t::get_queue_depth() const
-{
-    return _aio_ctxt ? _aio_ctxt->_queue_depth : -1;
-}
+{ return _aio_ctxt ? _aio_ctxt->_queue_depth : -1; }
 
 const bool deepspeed_io_handle_t::get_single_submit() const { return _single_submit; }
 
@@ -80,9 +88,7 @@ const bool deepspeed_io_handle_t::get_overlap_events() const { return _overlap_e
 const int deepspeed_io_handle_t::get_intra_op_parallelism() const { return _intra_op_parallelism; }
 
 const int deepspeed_io_handle_t::get_alignment() const
-{
-    return _intra_op_parallelism * O_DIRECT_ALIGNMENT;
-}
+{ return _intra_op_parallelism * O_DIRECT_ALIGNMENT; }
 
 int deepspeed_io_handle_t::read(torch::Tensor& buffer,
                                 const char* filename,
@@ -95,14 +101,18 @@ int deepspeed_io_handle_t::read(torch::Tensor& buffer,
 
     int64_t num_file_bytes;
     if (-1 == get_file_size(filename, num_file_bytes)) {
+#if defined(_WIN32)
+        const auto error_code = static_cast<int>(GetLastError());
+#else
         const auto error_code = errno;
+#endif
         report_file_error(filename, " fstat for read", error_code);
         return -1;
     }
     assert(static_cast<int64_t>(buffer.nbytes()) == num_file_bytes);
 
     const auto fd = open_file(filename, true);
-    if (fd == -1) { return -1; }
+    if (fd == AIO_INVALID_FD) { return -1; }
 
     auto read_buffer = (char*)buffer.data_ptr();
     std::unique_ptr<io_xfer_ctxt> xfer_ctxt(
@@ -114,7 +124,7 @@ int deepspeed_io_handle_t::read(torch::Tensor& buffer,
         do_aio_operation_sequential(true, _aio_ctxt, xfer_ctxt, &_aio_config, nullptr);
     }
 
-    close(fd);
+    close_file(fd);
     const std::chrono::duration<double> aio_time =
         std::chrono::high_resolution_clock::now() - start_time;
 
@@ -136,7 +146,7 @@ int deepspeed_io_handle_t::write(const torch::Tensor& buffer,
     const auto start_time = std::chrono::high_resolution_clock::now();
 
     const auto fd = open_file(filename, false);
-    if (fd == -1) { return -1; }
+    if (fd == AIO_INVALID_FD) { return -1; }
     warn_consumer_ssd_writes();
 
     auto write_buffer = (char*)buffer.data_ptr();
@@ -152,7 +162,7 @@ int deepspeed_io_handle_t::write(const torch::Tensor& buffer,
     const std::chrono::duration<double> aio_time =
         std::chrono::high_resolution_clock::now() - start_time;
 
-    close(fd);
+    close_file(fd);
 
     if (validate) { validate_aio_operation(false, filename, write_buffer, num_write_bytes); }
 
@@ -220,7 +230,7 @@ int deepspeed_io_handle_t::_wait_locked()
 
         completed_op->finish();
 
-        if (!completed_op->_filename.empty()) { close(completed_op->_fd); }
+        if (!completed_op->_filename.empty()) { close_file(completed_op->_fd); }
 
         --_num_pending_ops;
         ++num_completed_ops;
@@ -245,7 +255,7 @@ bool deepspeed_io_handle_t::_is_valid_parallel_aio_op(const bool read_op, const 
 std::shared_ptr<struct io_op_desc_t> deepspeed_io_handle_t::_create_io_op_desc(
     const bool read_op,
     const torch::Tensor& buffer,
-    const int fd,
+    const aio_fd_t fd,
     const char* filename,
     const bool validate,
     const int64_t file_offset)
@@ -261,7 +271,7 @@ std::shared_ptr<struct io_op_desc_t> deepspeed_io_handle_t::_create_io_op_desc(
 }
 
 int deepspeed_io_handle_t::_pread(const torch::Tensor& buffer,
-                                  const int fd,
+                                  const aio_fd_t fd,
                                   const char* filename,
                                   const bool validate,
                                   const bool async,
@@ -289,13 +299,13 @@ int deepspeed_io_handle_t::pread(const torch::Tensor& buffer,
     if (!_is_valid_parallel_aio_op(true, buffer_bytes)) { return -1; }
 
     const auto fd = open_file(filename, true);
-    if (fd == -1) { return -1; }
+    if (fd == AIO_INVALID_FD) { return -1; }
 
     return _pread(buffer, fd, filename, validate, async, file_offset);
 }
 
 int deepspeed_io_handle_t::_pwrite(const torch::Tensor& buffer,
-                                   const int fd,
+                                   const aio_fd_t fd,
                                    const char* filename,
                                    const bool validate,
                                    const bool async,
@@ -321,7 +331,7 @@ int deepspeed_io_handle_t::pwrite(const torch::Tensor& buffer,
     if (!_is_valid_parallel_aio_op(false, num_write_bytes)) { return -1; }
 
     const auto fd = open_file(filename, false);
-    if (fd == -1) { return -1; }
+    if (fd == AIO_INVALID_FD) { return -1; }
 
     return _pwrite(buffer, fd, filename, validate, async, file_offset);
 }
@@ -329,30 +339,22 @@ int deepspeed_io_handle_t::pwrite(const torch::Tensor& buffer,
 int deepspeed_io_handle_t::sync_pread(torch::Tensor& buffer,
                                       const char* filename,
                                       const int64_t file_offset)
-{
-    return pread(buffer, filename, false, false, file_offset);
-}
+{ return pread(buffer, filename, false, false, file_offset); }
 
 int deepspeed_io_handle_t::sync_pwrite(const torch::Tensor& buffer,
                                        const char* filename,
                                        const int64_t file_offset)
-{
-    return pwrite(buffer, filename, false, false, file_offset);
-}
+{ return pwrite(buffer, filename, false, false, file_offset); }
 
 int deepspeed_io_handle_t::async_pread(torch::Tensor& buffer,
                                        const char* filename,
                                        const int64_t file_offset)
-{
-    return pread(buffer, filename, false, true, file_offset);
-}
+{ return pread(buffer, filename, false, true, file_offset); }
 
 int deepspeed_io_handle_t::async_pwrite(const torch::Tensor& buffer,
                                         const char* filename,
                                         const int64_t file_offset)
-{
-    return pwrite(buffer, filename, false, true, file_offset);
-}
+{ return pwrite(buffer, filename, false, true, file_offset); }
 
 int deepspeed_io_handle_t::async_pwrite(const torch::Tensor& buffer,
                                         const int fd,
@@ -361,7 +363,16 @@ int deepspeed_io_handle_t::async_pwrite(const torch::Tensor& buffer,
     const auto num_write_bytes = static_cast<int64_t>(buffer.nbytes());
     if (!_is_valid_parallel_aio_op(false, num_write_bytes)) { return -1; }
 
-    return _pwrite(buffer, fd, nullptr, false, true, file_offset);
+#if defined(_WIN32)
+    // Callers pass a Python-level (CRT) fd from os.open(), but aio_fd_t is a Win32 HANDLE on this
+    // platform; _get_osfhandle recovers the HANDLE backing that CRT fd.
+    const auto handle = reinterpret_cast<aio_fd_t>(_get_osfhandle(fd));
+    if (handle == AIO_INVALID_FD) { return -1; }
+#else
+    const auto handle = fd;
+#endif
+
+    return _pwrite(buffer, handle, nullptr, false, true, file_offset);
 }
 
 at::Tensor deepspeed_io_handle_t::new_cpu_locked_tensor(const int64_t num_elem,
