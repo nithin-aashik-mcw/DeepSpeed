@@ -2,6 +2,7 @@ name: Build and publish DeepSpeed release
 
 on:
   push:
+    branches: [ pr_test ]
     tags:
       - 'v*.*.*'
 
