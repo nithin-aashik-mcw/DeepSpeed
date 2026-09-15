@@ -325,7 +325,7 @@ else:
 
 start_time = time.time()
 
-setup(name='deepspeed-mcw',
+setup(name='deepspeed-mcw1',
       version=version_str,
       description='DeepSpeed library',
       long_description=readme_text,
